@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+openai
+torch
+transformers
+langchain
+langchain-community
+faiss-cpu
+pydantic
+tqdm
+termcolor
+prettytable
+pptree
+regex
+xlsxwriter>=3.2

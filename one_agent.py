@@ -1,0 +1,98 @@
+from config import GENERATION_CONFIG_BASE, MODEL_NAME
+from utils import ThinkingTagFilter, apply_thinking_instruction, strip_thinking_content
+
+
+def _collect_rag_context(question, client, retriever):
+    if retriever is None:
+        return ""
+
+    rag_knowledge_raw = retriever.retrieve_docs_multi_channel(
+        question=question,
+        model=client,
+    )
+    rag_knowledge = []
+    for key in ("main_docs", "sub_docs"):
+        docs = rag_knowledge_raw.get(key)
+        if docs:
+            rag_knowledge.extend(data["a"] for data in docs if "a" in data)
+
+    return "\n".join(rag_knowledge)
+
+
+def process_base_query(question, client, retriever=None, callback=None):
+    """Process a simple medical query with optional retrieved context."""
+    try:
+        rag_context = _collect_rag_context(question, client, retriever)
+
+        messages = [
+            {
+                "role": "system",
+                "content": "你是京东方-哈工大多智能体医生助手，请回答下面的简单医学问题。",
+            }
+        ]
+        if rag_context:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": apply_thinking_instruction(
+                        f"检索到的信息为：\n{rag_context}\n\n你要回答的问题为：{question}"
+                    ),
+                }
+            )
+        else:
+            messages.append({
+                "role": "user",
+                "content": apply_thinking_instruction(f"你要回答的问题为：{question}"),
+            })
+
+        if callback:
+            callback(
+                "step",
+                "开始分析问题",
+                "基础分析智能体",
+                ["理解问题内容", "组织专业答案"],
+            )
+
+        config = GENERATION_CONFIG_BASE.copy()
+        config.update(
+            {
+                "messages": messages,
+                "model": MODEL_NAME,
+            }
+        )
+
+        response_stream = client.chat.completions.create(**config)
+        full_response = ""
+        thinking_filter = ThinkingTagFilter()
+        for chunk in response_stream:
+            if not getattr(chunk, "choices", None):
+                continue
+
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+
+            if content:
+                visible_content = thinking_filter.feed(content)
+                if not visible_content:
+                    continue
+                full_response += visible_content
+
+                if callback:
+                    callback("incremental", visible_content, "基础分析智能体")
+
+        tail = thinking_filter.finish()
+        if tail:
+            full_response += tail
+            if callback:
+                callback("incremental", tail, "基础分析智能体")
+        full_response = strip_thinking_content(full_response)
+
+        if callback:
+            callback("output", f"## 基础分析结果\n\n{full_response}", "基础分析智能体")
+
+        return full_response
+    except Exception as e:
+        error_msg = f"基础查询处理出错: {str(e)}"
+        if callback:
+            callback("output", f"## 错误信息\n\n{error_msg}", "基础分析智能体")
+        raise RuntimeError(error_msg) from e

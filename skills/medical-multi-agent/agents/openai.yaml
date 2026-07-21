@@ -1,0 +1,4 @@
+interface:
+  display_name: "医疗多智能体推理"
+  short_description: "面向医疗多智能体的安全推理、证据整合与风险升级工作流"
+  default_prompt: "Use $medical-multi-agent to structure a safe, evidence-aware multi-agent medical analysis."

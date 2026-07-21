@@ -1,0 +1,3 @@
+Repository: https://github.com/Qwen-Applications/Trace2Skill
+Commit: 3d0b52a140f002a512930252b613c49048f7d5ac
+Integrated as an offline dependency. Do not call it from the online request path.

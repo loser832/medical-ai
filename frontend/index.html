@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="MedScope AI 多智能体医疗决策过程可视化">
+  <title>MedScope AI · 决策过程可视化</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="MedScope AI 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>
+        </span>
+        <span>
+          <strong>MedScope <em>AI</em></strong>
+          <small>多智能体临床决策支持</small>
+        </span>
+      </a>
+
+      <div class="topbar-actions">
+        <div class="system-status" title="后端连接状态">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="connectionStatus">演示数据已就绪</span>
+        </div>
+        <button class="icon-button" id="settingsButton" type="button" aria-label="接口设置" title="接口设置">
+          <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+        </button>
+        <div class="profile" aria-label="当前工作区">
+          <span>MA</span>
+          <div><strong>临床工作台</strong><small>Research mode</small></div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-row">
+        <div>
+          <p class="eyebrow">DECISION INTELLIGENCE / 01</p>
+          <h1>让每一步医学决策<br><span>清晰可见。</span></h1>
+          <p class="hero-copy">实时观察专家招募、证据分析、观点交锋与共识形成过程。</p>
+        </div>
+        <div class="case-meta">
+          <span>CASE ID</span>
+          <strong id="caseId">MS-0714-024</strong>
+          <button id="copyCaseId" class="copy-button" type="button" aria-label="复制病例编号">
+            <svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="panel input-panel">
+          <div class="panel-heading">
+            <div><span class="step-label">01</span><h2>病例输入</h2></div>
+            <span class="tag">多专家模式</span>
+          </div>
+
+          <label class="field-label" for="questionInput">临床问题</label>
+          <div class="textarea-wrap">
+            <textarea id="questionInput" maxlength="1200" spellcheck="false">一名72岁男性，突发右侧肢体无力及言语不清2小时。既往有房颤病史，长期服用华法林。当前INR为1.6，头颅CT未见出血。请评估是否适合静脉溶栓，并给出决策依据。</textarea>
+            <span class="character-count"><b id="charCount">0</b>/1200</span>
+          </div>
+
+          <div class="input-options">
+            <label>
+              <span>分析深度</span>
+              <select id="difficultySelect">
+                <option value="hard" selected>深度会诊</option>
+                <option value="medium">标准会诊</option>
+                <option value="simple">快速分析</option>
+              </select>
+            </label>
+            <label>
+              <span>知识增强</span>
+              <span class="switch-row"><input id="ragToggle" type="checkbox" checked><i></i><b id="ragStatus">已启用</b></span>
+            </label>
+            <label class="difficulty-agent-option">
+              <span>难度判定方式</span>
+              <span class="switch-row"><input id="difficultyAgentToggle" type="checkbox"><i></i><b id="difficultyModeStatus">由用户指定分析深度</b></span>
+            </label>
+          </div>
+
+          <button class="primary-button" id="startButton" type="button">
+            <span class="button-icon">
+              <svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg>
+            </span>
+            <span><strong>开始多智能体分析</strong><small>连接本地推理服务</small></span>
+            <kbd>⌘ ↵</kbd>
+          </button>
+          <button class="text-button" id="demoButton" type="button">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v6h-6"/></svg>
+            回放演示决策
+          </button>
+
+          <div class="safety-note">
+            <svg viewBox="0 0 24 24"><path d="M12 3 4 6v5c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6l-8-3Z"/><path d="m9 12 2 2 4-5"/></svg>
+            <p><strong>研究用途提示</strong>系统输出仅用于科研与辅助分析，不能替代临床医生的专业判断。</p>
+          </div>
+        </aside>
+
+        <section class="panel process-panel">
+          <div class="panel-heading process-heading">
+            <div><span class="step-label">02</span><h2>决策轨迹</h2></div>
+            <div class="live-badge"><span></span><b id="runState">分析完成</b></div>
+          </div>
+
+          <nav class="stage-track" id="stageTrack" aria-label="决策进度"></nav>
+
+          <div class="network-card">
+            <div class="network-head">
+              <div><span>EXPERT COLLABORATION MAP</span><strong>专家协作网络</strong></div>
+              <div class="legend"><i></i>支持 <i></i>补充 <i></i>质询</div>
+            </div>
+            <div class="expert-network" id="expertNetwork"></div>
+          </div>
+
+          <div class="event-section">
+            <div class="event-header">
+              <div><strong>推理事件流</strong><span id="eventCount">8 个事件</span></div>
+              <button id="collapseEvents" type="button">收起详情 <span>⌃</span></button>
+            </div>
+            <div class="event-list" id="eventList" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <aside class="panel decision-panel">
+          <div class="panel-heading">
+            <div><span class="step-label">03</span><h2>决策结论</h2></div>
+            <button class="more-button" type="button" aria-label="更多操作">•••</button>
+          </div>
+
+          <div class="confidence-card">
+            <div class="confidence-ring" id="confidenceRing" style="--value: 0">
+              <span><strong id="confidenceValue">0</strong><small>%</small></span>
+            </div>
+            <div><span>综合置信度</span><strong id="confidenceLabel">等待评估</strong><small>基于专家一致性与证据强度</small></div>
+          </div>
+
+          <div class="decision-result">
+            <span class="result-kicker"><i></i> 最终决策</span>
+            <h3 id="decisionTitle">等待专家共识</h3>
+            <p id="decisionSummary">提交临床问题后，系统将在此展示动态形成的最终决策。</p>
+          </div>
+
+          <div class="evidence-block">
+            <div class="subheading"><strong>关键决策依据</strong><span id="evidenceCount">0 项</span></div>
+            <ol id="evidenceList"></ol>
+          </div>
+
+          <div class="vote-block">
+            <div class="subheading"><strong>专家投票</strong><span id="expertCount">0 位专家</span></div>
+            <div class="vote-bar"><i id="supportBar" style="--width: 0%"></i><i id="reserveBar" style="--width: 100%"></i></div>
+            <div class="vote-legend"><span><i></i>支持结论 <b id="supportCount">0</b></span><span><i></i>保留 / 反对 <b id="reserveCount">0</b></span></div>
+          </div>
+
+          <button class="export-button" id="exportButton" type="button">
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14"/></svg>
+            导出决策记录
+          </button>
+          <p class="last-updated">决策于 <span id="updatedTime">尚未</span> 更新 · 模型 <span id="modelName">Qwen3-32B</span></p>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="settingsDialog">
+    <form method="dialog" id="settingsForm">
+      <div class="dialog-heading"><div><span>CONNECTION</span><h2>推理服务设置</h2></div><button value="cancel" aria-label="关闭">×</button></div>
+      <label>流式接口地址<input id="endpointInput" type="url" value="http://127.0.0.1:50042/chat/stream"></label>
+      <p>前端会通过 POST 请求读取 SSE 事件。修改仅保存在当前浏览器。</p>
+      <div class="dialog-actions"><button value="cancel">取消</button><button id="saveSettings" value="default">保存设置</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="./app.js"></script>
+</body>
+</html>

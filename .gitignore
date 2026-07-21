@@ -1,0 +1,46 @@
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+.DS_Store
+
+*.log
+*.tmp
+*.bak
+
+knowledge/
+faiss_index*/
+*.faiss
+*.pkl
+
+*.zip
+*.tar
+*.tar.gz
+*.mp3
+*.pcm
+
+# Trace2Skill runtime data may contain reviewed medical traces.
+data/trace2skill/traces/
+data/trace2skill/parsed_error_records.json
+data/trace2skill/reviewed_cases.jsonl
+artifacts/trace2skill/
+third_party/Trace2Skill/.venv/
+third_party/Trace2Skill/parse_failures*/
+
+# Local model weights and generated files
+models/
+backups/
+outputs/
+artifacts/
+*.rar
+
+# IDE/local configuration
+.idea/
+
+# Optional: local Codex configuration
+.agents/
+.codex/

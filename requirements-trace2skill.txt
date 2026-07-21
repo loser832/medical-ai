@@ -1,0 +1,6 @@
+# Install in a separate offline evolution environment.
+openai
+tqdm
+openpyxl
+requests
+diskcache
