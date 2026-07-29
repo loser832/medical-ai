@@ -229,6 +229,7 @@ def collect_assigned_tasks_concurrent(
     callback=None,
     agent_index=0,
     total_agents=0,
+    web_evidence_context="",
 ):
     """检索指定子问题，并将结构化任务包发送给对应从智能体。"""
     if callback:
@@ -272,6 +273,12 @@ def collect_assigned_tasks_concurrent(
 """.strip())
 
     task_packets = "\n\n".join(packet_sections)
+    external_evidence_section = (
+        "\n\n联网证据包（外部公开资料；只能按 W 编号和原始 URL 引用）：\n"
+        f"{web_evidence_context}"
+        if web_evidence_context
+        else "\n\n联网证据包：本次未启用或未获得可信联网证据。"
+    )
     print(agent_name, task_packets)
     try:
         opinion = agent.chat(f"""
@@ -283,6 +290,8 @@ def collect_assigned_tasks_concurrent(
 
 你的结构化任务包：
 {task_packets}
+
+{external_evidence_section}
 
 请严格按以下结构回复每个任务：
 ### 任务编号
@@ -386,6 +395,7 @@ def run_concurrent_assigned_tasks(
     client,
     callback=None,
     max_workers=None,
+    web_evidence_context="",
 ):
     """按主智能体的任务规划，并发执行各从智能体的子问题。"""
     assignments_by_agent = {agent_name: [] for agent_name in agent_dict}
@@ -422,6 +432,7 @@ def run_concurrent_assigned_tasks(
                 callback,
                 index,
                 len(active_assignments),
+                web_evidence_context,
             )
             futures.append(future)
 
@@ -522,6 +533,8 @@ def process_diff_query(
     callback=None,
     need_rag=False,
     trace_recorder=None,
+    final_response_instruction=None,
+    web_evidence_context="",
 ):
     """
     处理复杂度的医疗查询，适用于中文场景。
@@ -823,6 +836,7 @@ def process_diff_query(
         task_plan=task_plan,
         client=client,
         callback=callback,
+        web_evidence_context=web_evidence_context,
     )
     
     print(initial_report)
@@ -1074,6 +1088,20 @@ def process_diff_query(
         print("[警告] 未能从辩论中获取最终答案，将使用初步意见进行最终决策。")
 
     # 由同一个主智能体接收从智能体回复并生成最终总结。
+    custom_final_requirement = ""
+    if final_response_instruction:
+        custom_final_requirement = (
+            "\n6. 最终回答还必须遵循以下科研评估输出要求：\n"
+            f"{final_response_instruction}\n"
+        )
+
+    final_web_requirement = ""
+    if web_evidence_context:
+        final_web_requirement = f"""
+联网证据账本：
+{web_evidence_context}
+"""
+
     final_decision_content = master_agent.chat(f"""请根据主智能体最初的子问题规划和各从智能体的最终答案（或初步意见），完成最终一致性审查并回答原始问题。
 
 子问题规划：
@@ -1085,12 +1113,18 @@ def process_diff_query(
 原始问题：
 {question}
 
+{final_web_requirement}
+
 要求：
 1. 检查所有子问题是否得到覆盖；
 2. 明确列出专家一致意见；
 3. 明确列出专家冲突、证据不足和仍然存在的不确定性；
 4. 冲突不能仅按多数票忽略，应根据证据质量、专业匹配度和风险进行判断；
 5. 最终回答必须直接回应原始问题，并保留必要的医学安全提醒。
+{custom_final_requirement}
+6. 若存在联网证据账本，只能引用账本内的 URL，并在相应结论后标注 [W编号]；
+7. 不得根据标题猜测网页正文，不得编造、补全或改写 URL；
+8. 账本已有相关来源时，不得声称“未找到资料”；摘要不足时应明确说明尚需打开原文核验。
 
 请严格遵循以下格式：
 子问题结论：[逐项汇总]

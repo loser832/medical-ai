@@ -39,6 +39,32 @@ FAISS_INDEX_PATH = os.getenv(
 )
 HF_LOCAL_FILES_ONLY = _env_flag("HF_LOCAL_FILES_ONLY", True)
 
+# Optional request-scoped web grounding. The UI switch is off by default, and
+# the server-side flag provides an independent deployment-wide kill switch.
+WEB_SEARCH_ENABLED = _env_flag("WEB_SEARCH_ENABLED", True)
+WEB_SEARCH_PROVIDER = os.getenv("WEB_SEARCH_PROVIDER", "auto")
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+WEB_SEARCH_MAX_CONTEXT_CHARS = int(
+    os.getenv("WEB_SEARCH_MAX_CONTEXT_CHARS", "8000")
+)
+WEB_SEARCH_TIMEOUT_SECONDS = float(
+    os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "12")
+)
+WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "wt-wt")
+WEB_SEARCH_USER_AGENT = os.getenv(
+    "WEB_SEARCH_USER_AGENT",
+    "MedScope-AI/1.0 (+server-side medical research prototype)",
+)
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY")
+WEB_SEARCH_BRAVE_ENDPOINT = os.getenv(
+    "WEB_SEARCH_BRAVE_ENDPOINT",
+    "https://api.search.brave.com/res/v1/web/search",
+)
+WEB_SEARCH_DDG_ENDPOINT = os.getenv(
+    "WEB_SEARCH_DDG_ENDPOINT",
+    "https://html.duckduckgo.com/html/",
+)
+
 # Multiple FAISS index versions can be registered here when available.
 DEFAULT_FAISS_VERSION = "v4"
 FAISS_INDEX_VERSIONS = {
@@ -50,8 +76,8 @@ RETRIEVER_MAIN_TOPK = 3
 RETRIEVER_SUB_TOPK = 3
 RETRIEVER_MIN_SCORE = 0.9
 STREAM_RETRIEVER_MIN_SCORE = 0.95
-RERANK_TOP_N = 10
-VECTOR_RETRIEVER_TOP_K = 50
+RERANK_TOP_N = 40
+VECTOR_RETRIEVER_TOP_K = 200
 
 # FastAPI service.
 SERVER_HOST = "0.0.0.0"

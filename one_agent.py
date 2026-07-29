@@ -19,7 +19,13 @@ def _collect_rag_context(question, client, retriever):
     return "\n".join(rag_knowledge)
 
 
-def process_base_query(question, client, retriever=None, callback=None):
+def process_base_query(
+    question,
+    client,
+    retriever=None,
+    callback=None,
+    web_evidence_context="",
+):
     """Process a simple medical query with optional retrieved context."""
     try:
         rag_context = _collect_rag_context(question, client, retriever)
@@ -30,20 +36,25 @@ def process_base_query(question, client, retriever=None, callback=None):
                 "content": "你是京东方-哈工大多智能体医生助手，请回答下面的简单医学问题。",
             }
         ]
+        context_sections = []
         if rag_context:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": apply_thinking_instruction(
-                        f"检索到的信息为：\n{rag_context}\n\n你要回答的问题为：{question}"
-                    ),
-                }
+            context_sections.append(f"本地检索信息：\n{rag_context}")
+        if web_evidence_context:
+            context_sections.append(
+                "联网证据账本（只能引用账本内 URL，并保留 W 编号）：\n"
+                f"{web_evidence_context}"
             )
-        else:
-            messages.append({
-                "role": "user",
-                "content": apply_thinking_instruction(f"你要回答的问题为：{question}"),
-            })
+        context_text = (
+            "\n\n".join(context_sections) + "\n\n"
+            if context_sections
+            else ""
+        )
+        messages.append({
+            "role": "user",
+            "content": apply_thinking_instruction(
+                f"{context_text}你要回答的问题为：{question}"
+            ),
+        })
 
         if callback:
             callback(

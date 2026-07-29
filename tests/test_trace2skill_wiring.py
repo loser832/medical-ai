@@ -26,6 +26,7 @@ class IntegrationWiringTests(unittest.TestCase):
         process = _function(tree, "process_diff_query")
         parameter_names = [argument.arg for argument in process.args.args]
         self.assertIn("trace_recorder", parameter_names)
+        self.assertIn("final_response_instruction", parameter_names)
 
         agent_calls = [
             node

@@ -68,3 +68,17 @@ export SSE_HEARTBEAT_SECONDS=10
 ```bash
 node frontend/binding.smoke.test.js
 ```
+
+## 联网检索开关
+
+病例输入区提供“联网检索（逐次开关）”，默认关闭。开启后，请求体会增加：
+
+```json
+{
+  "enableWebSearch": true
+}
+```
+
+该开关只影响下一次提交的分析。搜索由后端完成，搜索服务密钥不会下发到浏览器；
+关闭时后端不会发起网页搜索。搜索失败会在事件流中显示回退提示，原有本地知识流程
+仍会继续执行。

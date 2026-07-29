@@ -259,6 +259,7 @@ LLM 知识增强与原子化
 ```text
 .
 ├── config.py          # 全局配置：模型、服务、检索、生成参数、CORS 与会话参数
+├── web_search.py      # 可选联网检索、来源整理、外部内容隔离与安全降级
 ├── utils.py           # Agent 封装、LLM 调用、流式输出、难度评估
 ├── retriever.py       # 医学知识检索、子问题三路改写、合并去重、重排
 ├── md_agent.py        # 动态专家招募、多专家讨论、最终决策汇总
@@ -278,17 +279,32 @@ LLM 知识增强与原子化
 
 ### 母版恢复
 
-本次主从智能体流程改造前的母版位于：
+主从智能体流程改造前的母版位于：
 
 ```text
 backups/master_before_main_subagent_pipeline_20260717_220206/
 ```
 
-可在项目根目录使用以下 PowerShell 命令恢复本次修改涉及的母版文件：
+对应恢复命令：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\backups\master_before_main_subagent_pipeline_20260717_220206\restore.ps1"
 ```
+
+本次联网检索改造前的完整跟踪源码快照位于：
+
+```text
+backups/source_before_web_search_20260727_161807/
+```
+
+对应恢复命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\backups\source_before_web_search_20260727_161807\restore.ps1"
+```
+
+该目录包含 `BACKUP_MANIFEST.md` 和 `SHA256SUMS.txt`。恢复前请先停止后端，并再次
+备份当前工作区；恢复脚本不会删除快照之后新增的文件。
 
 ---
 
@@ -354,6 +370,51 @@ export STROKE_HARD_RECRUITMENT_ENABLED=false
 ```bash
 python test_qwen_api.py
 ```
+
+### 可选：配置联网检索
+
+页面中的“联网检索”开关默认关闭。只有用户在本次分析前手动开启时，后端才会根据
+**当前问题**生成不超过 400 个字符的检索式并发送给搜索服务；对话历史、本地知识库内容
+和模型 API Key 不会发送给搜索服务。关闭开关时不会产生网页搜索请求。若问题明确指定
+WHO 等机构，系统会生成类似 `site:who.int stroke fact sheet` 的检索式，并在进入模型前
+过滤 WHOIS、域名注册页和不匹配的来源。
+
+默认 `WEB_SEARCH_PROVIDER=auto`：配置了 `BRAVE_SEARCH_API_KEY` 时使用
+[Brave Search API](https://brave.com/search/api/)，否则使用无需 Key 的 DuckDuckGo HTML
+检索作为开发环境回退。生产环境建议使用 Brave 的正式结构化 API：
+
+```powershell
+$env:WEB_SEARCH_PROVIDER="brave"
+$env:BRAVE_SEARCH_API_KEY="<YOUR_BRAVE_SEARCH_API_KEY>"
+python multi_agent.py
+```
+
+Linux / macOS：
+
+```bash
+export WEB_SEARCH_PROVIDER=brave
+export BRAVE_SEARCH_API_KEY="<YOUR_BRAVE_SEARCH_API_KEY>"
+python multi_agent.py
+```
+
+常用配置：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `WEB_SEARCH_ENABLED` | `true` | 服务端总开关；设为 `false` 后客户端无法启用联网 |
+| `WEB_SEARCH_PROVIDER` | `auto` | `auto`、`brave` 或 `duckduckgo` |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | 每次最多注入的搜索结果数，上限 10 |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | `12` | 单次搜索超时秒数 |
+| `WEB_SEARCH_MAX_CONTEXT_CHARS` | `8000` | 注入模型的网页摘要总长度上限 |
+
+搜索失败、超时、无结果或额度不足时，流式事件会显示原因，并自动回退到原有本地知识
+流程，不会中断医疗分析。DuckDuckGo 若返回反自动化验证页，错误信息会建议改用 Brave。
+网页标题和摘要被视为不可信外部数据，不能替代受控医学知识、原始指南全文或临床判断。
+
+检索成功事件会显示实际检索式、服务商、采纳/拒绝数量，以及带 `[W1]` 编号的真实 URL。
+单纯的“资料/来源/链接查询”会走快速路由，直接返回这些可核验来源，不再启动临床专家
+辩论。病例分析仍走原多智能体流程，但网页证据以独立账本传给从智能体和主智能体；最终
+输出只能引用账本内 URL。
 
 ### 4. 配置本地检索资源
 
@@ -451,6 +512,73 @@ python -m trace2skill_adapter.promote_skill `
 
 ---
 
+## SAI 测试集批量验证
+
+项目提供 `sai_validation.py`，可让当前医疗多智能体系统完整经过专家招募、主智能体
+拆题、RAG 检索、专家讨论和最终决策，分别验证 `A-SAI.xlsx`、`NA-SAI.xlsx` 和
+`SAI.xlsx`，输出 F1、精确率、召回率、
+特异度、准确率、平衡准确率及混淆矩阵。该入口按批次推理，并把每批预测即时写入
+JSONL；运行中断后再次执行同一命令会自动续跑。
+
+先检查工作簿，不调用模型：
+
+```powershell
+python sai_validation.py --dry-run
+```
+
+配置 API Key 后进行小样本连通性验证：
+
+```powershell
+$env:MODAGENT_API_KEY="<YOUR_API_KEY>"
+python sai_validation.py --tasks SAI --sample-per-class 1 --batch-size 2 --bootstrap 0 `
+  --output-dir outputs\sai_validation\smoke
+```
+
+默认连接已经运行的 `http://127.0.0.1:50042` 医疗 Agent 服务；API Key 只需配置在
+启动 `multi_agent.py` 的环境中。其他服务地址可用 `--server-url` 指定。只有希望在
+验证进程中重新加载Agent时才使用 `--local-agent`。
+
+如需对 SAI 平衡抽样的 20 例执行联网增强分析，先重启已更新的后端，再使用：
+
+```powershell
+python sai_validation.py `
+  --tasks SAI `
+  --sample-per-class 10 `
+  --batch-size 2 `
+  --bootstrap 200 `
+  --enable-web-search `
+  --output-dir outputs\sai_validation\manual_sai_20_web
+```
+
+`--enable-web-search` 会为每个推理批次要求联网成功；验证器只发送任务终点主题检索词，
+不会把逐例 Excel 特征送给公共搜索服务。如果搜索未成功，批次会中止而不会静默降级。
+联网和非联网断点不能混用，因此应使用新的输出目录；确需覆盖旧目录时显式添加
+`--no-resume`。`--bootstrap 200` 只用于预测完成后的 F1 置信区间重采样，不会额外发起
+200 次模型或网页请求。
+
+小样本验证通过后运行完整测试集：
+
+```powershell
+python sai_validation.py --batch-size 8 `
+  --output-dir outputs\sai_validation\medical_agent
+```
+
+默认数据目录可通过 `--data-dir` 或环境变量 `SAI_TEST_DATA_DIR` 修改。测试标签
+不会发送给医疗 Agent；输出目录包含 `summary.csv`、`summary.json`、
+`prediction_details.csv`、用于断点续跑的逐任务 JSONL 文件，以及 `agent_audit`
+中的每批完整医疗 Agent 日志和最终决策。不要使用测试结果
+调整提示词、阈值或特征，否则将造成测试集泄漏。
+
+如果研究中的 A-SAI、NA-SAI 有明确全称或判定标准，应在首次正式运行前固定，例如：
+
+```powershell
+python sai_validation.py `
+  --task-description "A-SAI=<研究方案中的完整定义>" `
+  --task-description "NA-SAI=<研究方案中的完整定义>"
+```
+
+---
+
 ## API 示例
 
 ### 普通问答接口
@@ -474,7 +602,8 @@ curl -N -X POST "http://localhost:50042/chat/stream" \
     "id": "demo-session",
     "enableMultiAgent": true,
     "enableDifficultyAgent": false,
-    "difficulty": "hard"
+    "difficulty": "hard",
+    "enableWebSearch": false
   }'
 ```
 
@@ -487,7 +616,21 @@ curl -N -X POST "http://localhost:50042/chat/stream" \
 }
 ```
 
+如需为单次请求启用联网检索，可传入 `"enableWebSearch": true`。默认值为
+`false`；即使客户端传入 `true`，服务端仍可通过 `WEB_SEARCH_ENABLED=false` 全局禁用。
+
 流式接口会返回难度评估、专家招募、专家输出、讨论过程和最终答案等事件，便于前端实时展示系统推理过程。
+每个 SSE 心跳之后还会返回 `type=status` 事件，其中包含 `currentStage`、`workerAlive`、
+`idleSeconds`、`elapsedSeconds` 和 `possiblyStalled`。也可在另一个终端查询：
+
+```bash
+curl "http://127.0.0.1:50042/chat/status/demo-session"
+```
+
+`workerAlive=true` 表示后台线程仍在；连续 180 秒没有新步骤时
+`possiblyStalled=true`，这是“可能停滞”的提示而不是强制判死。若
+`workerStoppedUnexpectedly=true` 且状态仍为 `running`，说明线程异常退出且没有发送
+完成事件。`state=completed` 或 `state=error` 分别表示正常完成或明确失败。
 
 ---
 

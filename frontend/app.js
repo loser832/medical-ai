@@ -40,6 +40,8 @@ const elements = {
   updatedTime: $('#updatedTime'),
   modelName: $('#modelName'),
   ragStatus: $('#ragStatus'),
+  webSearchToggle: $('#webSearchToggle'),
+  webSearchStatus: $('#webSearchStatus'),
   difficultySelect: $('#difficultySelect'),
   difficultyAgentToggle: $('#difficultyAgentToggle'),
   difficultyModeStatus: $('#difficultyModeStatus'),
@@ -55,6 +57,7 @@ const appState = {
   sessionId: '',
   caseId: '',
   model: 'Qwen3-32B',
+  webSearchEnabled: false,
   currentStage: -1,
   stages: [],
   experts: [],
@@ -125,6 +128,7 @@ function resetAnalysis(sessionId = `web-${Date.now()}`) {
   const timestamp = Date.now();
   appState.sessionId = sessionId;
   appState.caseId = makeCaseId(timestamp);
+  appState.webSearchEnabled = elements.webSearchToggle.checked;
   appState.currentStage = -1;
   appState.stages = STAGES.map(label => ({ label, status: 'pending', startedAt: null, duration: null }));
   appState.experts = [];
@@ -491,7 +495,8 @@ function buildRequestPayload(query) {
     enableMultiAgent: true,
     enableDifficultyAgent: useDifficultyAgent,
     difficulty: useDifficultyAgent ? null : elements.difficultySelect.value,
-    needRag: $('#ragToggle').checked
+    needRag: $('#ragToggle').checked,
+    enableWebSearch: elements.webSearchToggle.checked
   };
 }
 
@@ -602,6 +607,7 @@ function exportDecision() {
     question: elements.input.value,
     generatedAt: new Date().toISOString(),
     model: appState.model,
+    webSearchEnabled: appState.webSearchEnabled,
     stages: appState.stages,
     experts: appState.experts.map(expert => ({ ...expert, opinion: appState.opinions[expert.role] || null })),
     votes,
@@ -628,6 +634,11 @@ elements.demo.addEventListener('click', runDemo);
 $('#exportButton').addEventListener('click', exportDecision);
 $('#ragToggle').addEventListener('change', event => {
   elements.ragStatus.textContent = event.target.checked ? '已启用' : '已关闭';
+});
+elements.webSearchToggle.addEventListener('change', event => {
+  elements.webSearchStatus.textContent = event.target.checked
+    ? '已启用 · 当前问题将发送至搜索服务'
+    : '已关闭 · 不发送网页请求';
 });
 elements.difficultyAgentToggle.addEventListener('change', updateDifficultyMode);
 $('#settingsButton').addEventListener('click', () => {

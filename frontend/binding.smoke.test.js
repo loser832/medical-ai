@@ -45,6 +45,7 @@ getElement('#questionInput').value = '测试病例';
 getElement('#endpointInput').value = 'http://127.0.0.1:50042/chat/stream';
 getElement('#difficultySelect').value = 'hard';
 getElement('#difficultyAgentToggle').checked = false;
+getElement('#webSearchToggle').checked = false;
 
 const localStore = new Map();
 const sandbox = {
@@ -83,6 +84,7 @@ const state = sandbox.window.MedScope.getState();
 const votes = Number(getElement('#supportCount').textContent) + Number(getElement('#reserveCount').textContent);
 const manualPayload = sandbox.window.MedScope.buildRequestPayload('测试问题');
 getElement('#difficultyAgentToggle').checked = true;
+getElement('#webSearchToggle').checked = true;
 const automaticPayload = sandbox.window.MedScope.buildRequestPayload('测试问题');
 sandbox.window.MedScope.handleStreamEvent({
   type: 'final_result',
@@ -100,7 +102,9 @@ const assertions = [
   [votes === 4, 'vote aggregation binding'],
   [getElement('#expertCount').textContent === '4 位专家', 'expert count DOM binding'],
   [manualPayload.enableDifficultyAgent === false && manualPayload.difficulty === 'hard', 'manual difficulty binding'],
+  [manualPayload.enableWebSearch === false, 'web search off binding'],
   [automaticPayload.enableDifficultyAgent === true && automaticPayload.difficulty === null, 'agent difficulty binding'],
+  [automaticPayload.enableWebSearch === true, 'web search on binding'],
   [longDecisionState.decision.title === '建议：患者应由皮肤科医生或感染科医生评估后制定个体化治疗方案。', 'full decision title binding'],
   [!longDecisionState.decision.summary.includes('思考过程') && longDecisionState.decision.summary.includes('完整正文应当全部显示'), 'visible answer cleanup binding']
 ];

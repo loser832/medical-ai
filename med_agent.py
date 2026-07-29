@@ -5,7 +5,15 @@ from threading import Lock
 callback_lock = Lock()
 result_lock = Lock()
 
-def analyze_domain_concurrent(domain, client, question, callback=None, total_domains=0, current_index=0):
+def analyze_domain_concurrent(
+    domain,
+    client,
+    question,
+    callback=None,
+    total_domains=0,
+    current_index=0,
+    web_evidence_context="",
+):
     """单个领域专家分析函数 - 用于并发执行"""
     domain_clean = domain.strip()
     
@@ -28,6 +36,11 @@ def analyze_domain_concurrent(domain, client, question, callback=None, total_dom
     domain_prompt = f"请仔细检查本问题中概述的医疗情况:{question}." \
                    f"利用你的医学专业知识,全面、详细地解释所描述的情况。" \
                    f"随后,找出并强调您认为最令人担忧或最值得注意的问题方面。"
+    if web_evidence_context:
+        domain_prompt += (
+            "\n\n联网证据账本（只能引用账本内 URL，并保留 W 编号）：\n"
+            f"{web_evidence_context}"
+        )
     
     domain_agent = Agent(client, role_message=domain_role, role=f'{domain_clean}领域专家')
     
@@ -55,7 +68,14 @@ def analyze_domain_concurrent(domain, client, question, callback=None, total_dom
         return domain, error_msg
 
 # 主要的并发执行代码
-def run_concurrent_domain_analysis(domains, client, question, callback=None, max_workers=None):
+def run_concurrent_domain_analysis(
+    domains,
+    client,
+    question,
+    callback=None,
+    max_workers=None,
+    web_evidence_context="",
+):
     """并发运行领域专家分析"""
     domain_analysis = {}
     
@@ -70,7 +90,13 @@ def run_concurrent_domain_analysis(domains, client, question, callback=None, max
         for i, domain in enumerate(domains):
             future = executor.submit(
                 analyze_domain_concurrent, 
-                domain, client, question, callback, len(domains), i
+                domain,
+                client,
+                question,
+                callback,
+                len(domains),
+                i,
+                web_evidence_context,
             )
             futures.append(future)
         
@@ -85,7 +111,12 @@ def run_concurrent_domain_analysis(domains, client, question, callback=None, max
     
     return domain_analysis
 
-def process_mid_query(question, client, callback=None):
+def process_mid_query(
+    question,
+    client,
+    callback=None,
+    web_evidence_context="",
+):
     
     NUM_QD = 3
     
@@ -138,7 +169,13 @@ def process_mid_query(question, client, callback=None):
         
         if USE_CONCURRENT:
             # 使用并发处理
-            domain_analysis = run_concurrent_domain_analysis(domains, client, question, callback)
+            domain_analysis = run_concurrent_domain_analysis(
+                domains,
+                client,
+                question,
+                callback,
+                web_evidence_context=web_evidence_context,
+            )
         else:
             # 原来的串行处理方式
             domain_analysis = {}
@@ -163,6 +200,11 @@ def process_mid_query(question, client, callback=None):
                 domain_prompt = f"请仔细检查本问题中概述的医疗情况:{question}." \
                                f"利用你的医学专业知识,全面、详细地解释所描述的情况。" \
                                f"随后,找出并强调您认为最令人担忧或最值得注意的问题方面。"
+                if web_evidence_context:
+                    domain_prompt += (
+                        "\n\n联网证据账本（只能引用账本内 URL，并保留 W 编号）：\n"
+                        f"{web_evidence_context}"
+                    )
                 
                 domain_agent = Agent(client, role_message=domain_role, role=f'{domain_clean}领域专家')
                 
@@ -211,6 +253,12 @@ def process_mid_query(question, client, callback=None):
                             f"2. 从以下报告中提取关键知识。" \
                             f"3. 在医学知识的基础上,得出全面、详细的分析。" \
                             f"4. 您的最终目标是在上述报告的基础上派生出一个全面且精炼的综合报告。" 
+        if web_evidence_context:
+            synthesizer_prompt += (
+                "\n\n联网证据账本：\n"
+                f"{web_evidence_context}\n"
+                "只能引用账本内 URL，并保留 W 编号；不得编造链接。"
+            )
         
         synthesizer_agent = Agent(client, role_message=synthesizer_role, role='综合分析专家')
         

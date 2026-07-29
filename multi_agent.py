@@ -15,6 +15,15 @@ import queue
 import time
 from typing import Generator, Dict, Any
 from trace2skill_adapter.recorder import create_trace_recorder
+from web_search import WebSearchError
+from web_evidence import (
+    build_source_lookup_answer,
+    build_web_evidence_context,
+    canonicalize_grounded_answer,
+    format_evidence_summary,
+    is_source_lookup_query,
+    search_web_for_question,
+)
 from config import (
     CORS_ALLOW_CREDENTIALS,
     CORS_ALLOW_HEADERS,
@@ -50,6 +59,103 @@ retrieverr = Retriever(DEFAULT_FAISS_VERSION, min_score=STREAM_RETRIEVER_MIN_SCO
 # ✨ 新增：全局消息队列，用于收集中间过程
 message_queues = {}
 conversation_history = {}
+job_states = {}
+worker_threads = {}
+job_state_lock = threading.Lock()
+JOB_STALE_SECONDS = 180
+
+
+def _start_job_state(session_id: str):
+    now = time.time()
+    with job_state_lock:
+        job_states[session_id] = {
+            "state": "running",
+            "currentStage": "请求已接收，准备启动后台线程",
+            "startedAt": now,
+            "lastEventAt": now,
+            "error": None,
+        }
+
+
+def _touch_job_state(
+    session_id: str,
+    *,
+    state: str | None = None,
+    current_stage: str | None = None,
+    error: str | None = None,
+):
+    now = time.time()
+    with job_state_lock:
+        job = job_states.setdefault(
+            session_id,
+            {
+                "state": "running",
+                "currentStage": "后台任务运行中",
+                "startedAt": now,
+                "lastEventAt": now,
+                "error": None,
+            },
+        )
+        preserve_error = state == "completed" and job.get("state") == "error"
+        if state is not None and not preserve_error:
+            job["state"] = state
+        if current_stage is not None and not preserve_error:
+            job["currentStage"] = current_stage
+        if error is not None:
+            job["error"] = error
+        job["lastEventAt"] = now
+
+
+def get_job_status(session_id: str) -> Dict[str, Any]:
+    now = time.time()
+    with job_state_lock:
+        job = dict(job_states.get(session_id) or {})
+        worker = worker_threads.get(session_id)
+    if not job:
+        return {
+            "sessionId": session_id,
+            "state": "not_found",
+            "workerAlive": False,
+        }
+    idle_seconds = max(0.0, now - job["lastEventAt"])
+    elapsed_seconds = max(0.0, now - job["startedAt"])
+    worker_alive = bool(worker and worker.is_alive())
+    return {
+        "sessionId": session_id,
+        "state": job["state"],
+        "currentStage": job["currentStage"],
+        "workerAlive": worker_alive,
+        "workerStoppedUnexpectedly": (
+            job["state"] == "running" and not worker_alive
+        ),
+        "possiblyStalled": (
+            job["state"] == "running"
+            and worker_alive
+            and idle_seconds >= JOB_STALE_SECONDS
+        ),
+        "idleSeconds": round(idle_seconds, 1),
+        "elapsedSeconds": round(elapsed_seconds, 1),
+        "lastEventAt": int(job["lastEventAt"] * 1000),
+        "error": job.get("error"),
+    }
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _optional_text(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
 
 def get_conversation_context(session_id: str, max_turns: int = MAX_CONVERSATION_TURNS) -> str:
     """
@@ -127,6 +233,11 @@ class StreamHelper:
     @staticmethod
     def send_step(session_id: str, agent_name: str, description: str, details: list = None):
         """发送执行步骤到队列"""
+        _touch_job_state(
+            session_id,
+            state="running",
+            current_stage=f"{agent_name}：{description}",
+        )
         if session_id not in message_queues:
             return
             
@@ -145,6 +256,11 @@ class StreamHelper:
     @staticmethod
     def send_output(session_id: str, agent_name: str, content: str, status: str = "completed"):
         """发送智能体输出到队列"""
+        _touch_job_state(
+            session_id,
+            state="running",
+            current_stage=f"{agent_name}：已产生新输出",
+        )
         if session_id not in message_queues:
             return
             
@@ -163,6 +279,11 @@ class StreamHelper:
     @staticmethod
     def send_final(session_id: str, content: str, query: str):
         """发送最终结果"""
+        _touch_job_state(
+            session_id,
+            state="finalizing",
+            current_stage="最终结果已生成，准备结束流",
+        )
         if session_id not in message_queues:
             return
             
@@ -179,6 +300,11 @@ class StreamHelper:
     @staticmethod
     def send_complete(session_id: str, query: str):
         """发送完成信号"""
+        _touch_job_state(
+            session_id,
+            state="completed",
+            current_stage="处理完成",
+        )
         if session_id not in message_queues:
             return
             
@@ -194,6 +320,12 @@ class StreamHelper:
     @staticmethod
     def send_error(session_id: str, error: str, query: str):
         """发送错误事件；调用方随后必须发送 complete，避免 SSE 无限等待。"""
+        _touch_job_state(
+            session_id,
+            state="error",
+            current_stage="处理失败",
+            error=error,
+        )
         if session_id not in message_queues:
             return
 
@@ -247,6 +379,11 @@ def create_callback(session_id: str, default_agent_name: str, trace_recorder=Non
                     "timestamp": int(time.time() * 1000)
                 }
             }
+            _touch_job_state(
+                session_id,
+                state="running",
+                current_stage=f"{current_agent_name}：正在生成内容",
+            )
             if session_id in message_queues:
                 message_queues[session_id].put(output_data)
     
@@ -258,6 +395,7 @@ def process_base_query_with_callback(
     session_id,
     llm_client=None,
     trace_recorder=None,
+    web_evidence_context="",
 ):
     """使用回调函数版本的 process_base_query"""
     agent_name = "基础分析智能体"
@@ -266,7 +404,13 @@ def process_base_query_with_callback(
     # 调用原函数，传入OpenAI客户端
     callback = create_callback(session_id, agent_name, trace_recorder=trace_recorder)
     active_client = llm_client or client
-    result = process_base_query(question, active_client, retrieverr,callback=callback)
+    result = process_base_query(
+        question,
+        active_client,
+        retrieverr,
+        callback=callback,
+        web_evidence_context=web_evidence_context,
+    )
     StreamHelper.send_output(session_id, "基础分析智能体", result)
     return result
 
@@ -275,6 +419,7 @@ def process_mid_query_with_callback(
     session_id,
     llm_client=None,
     trace_recorder=None,
+    web_evidence_context="",
 ):
     """使用回调函数版本的 process_mid_query"""
     agent_name = "中等难度分析系统"
@@ -282,7 +427,12 @@ def process_mid_query_with_callback(
     
     # 调用原函数，传入OpenAI客户端和回调函数
     active_client = llm_client or client
-    final_decision, multiAgent = process_mid_query(question, active_client, callback=callback)
+    final_decision, multiAgent = process_mid_query(
+        question,
+        active_client,
+        callback=callback,
+        web_evidence_context=web_evidence_context,
+    )
     
     return final_decision, multiAgent
 
@@ -291,6 +441,7 @@ def process_diff_query_with_callback(
     session_id,
     llm_client=None,
     trace_recorder=None,
+    web_evidence_context="",
 ):
     """使用回调函数版本的 process_diff_query"""
     agent_name = "高难度分析系统"
@@ -303,6 +454,7 @@ def process_diff_query_with_callback(
         active_client,
         callback=callback,
         trace_recorder=trace_recorder,
+        web_evidence_context=web_evidence_context,
     )
     
     return final_decision, multiAgent
@@ -314,6 +466,8 @@ def background_process(
     difficulty: str,
     enable_difficulty_agent: bool = False,
     test_mode: bool = False,
+    enable_web_search: bool = False,
+    web_search_query: str | None = None,
 ):
     """后台执行分析过程"""
     request_client = None
@@ -332,8 +486,8 @@ def background_process(
             question_with_context = question
         else:
             question_with_context = create_question_with_context(question, session_id)
-        # print(question_with_context)
-        # 1. 难度评估：由前端显式决定是调用智能体，还是采用用户选择。
+
+        # 1. 难度评估只依据用户问题和对话，不让网页摘要改变路由。
         if enable_difficulty_agent:
             StreamHelper.send_step(
                 session_id,
@@ -347,27 +501,97 @@ def background_process(
                 "难度评估智能体",
                 f"## 难度评估结果\n\n智能体判定当前问题为：**{difficulty}**",
             )
-        elif difficulty in ['simple', 'medium', 'hard']:
-            difficulty_map = {'simple': '简单', 'medium': '中等', 'hard': '困难'}
+        elif difficulty in ["simple", "medium", "hard"]:
+            difficulty_map = {"simple": "简单", "medium": "中等", "hard": "困难"}
             difficulty = difficulty_map[difficulty]
         else:
             # 兼容没有传入新开关的旧客户端。
             difficulty = "困难"
+
+        # 2. 联网检索只接收当前问题，先规划检索式，再做来源与主题过滤。
+        web_response = None
+        web_search_error = None
+        web_search_elapsed_seconds = None
+        if enable_web_search:
+            StreamHelper.send_step(
+                session_id,
+                "联网检索系统",
+                "正在规划检索式并筛选公开网页资料",
+                ["仅发送当前问题", "优先匹配指定官方域名", "过滤无关来源并编号"],
+            )
+            web_started_at = time.monotonic()
+            try:
+                web_response = search_web_for_question(
+                    question,
+                    override_query=web_search_query,
+                )
+                StreamHelper.send_output(
+                    session_id,
+                    "联网检索系统",
+                    format_evidence_summary(web_response),
+                )
+            except WebSearchError as error:
+                web_search_error = str(error)
+                StreamHelper.send_output(
+                    session_id,
+                    "联网检索系统",
+                    f"## 联网检索未生效\n\n{web_search_error}。已自动回退到本地知识流程。",
+                )
+            except Exception as error:
+                web_search_error = "联网检索发生未预期错误"
+                print(f"联网检索异常: {error}")
+                StreamHelper.send_output(
+                    session_id,
+                    "联网检索系统",
+                    f"## 联网检索未生效\n\n{web_search_error}。已自动回退到本地知识流程。",
+                )
+            finally:
+                web_search_elapsed_seconds = round(
+                    time.monotonic() - web_started_at,
+                    3,
+                )
+
         if trace_recorder is not None:
             trace_recorder.set_context(
                 difficulty=difficulty,
                 test_mode=test_mode,
                 endpoint="/chat/stream",
+                web_search_requested=enable_web_search,
+                web_search_applied=web_response is not None,
+                web_search_provider=web_response.provider if web_response else None,
+                web_search_source_urls=(
+                    [result.url for result in web_response.results]
+                    if web_response
+                    else []
+                ),
+                web_search_error=web_search_error,
+                web_search_queries=list(web_response.queries) if web_response else [],
+                web_search_rejected_count=(
+                    web_response.rejected_count if web_response else 0
+                ),
+                web_search_elapsed_seconds=web_search_elapsed_seconds,
             )
-        
-        # 2. 根据难度选择处理方式（使用回调版本）
+
+        # 3. 资料来源查询走可核验快速路径；病例分析才进入医疗多智能体。
         multiAgent = ""
-        if difficulty == "简单":
+        web_evidence_context = (
+            build_web_evidence_context(web_response) if web_response else ""
+        )
+        if web_response is not None and is_source_lookup_query(question):
+            StreamHelper.send_step(
+                session_id,
+                "资料查询路由",
+                "已识别为公开资料查询，跳过临床多智能体辩论",
+                ["保留原始问题", "输出已核验来源", "避免无关专家扩写"],
+            )
+            final_decision = build_source_lookup_answer(question, web_response)
+        elif difficulty == "简单":
             final_decision = process_base_query_with_callback(
                 question_with_context,
                 session_id,
                 llm_client=request_client,
                 trace_recorder=trace_recorder,
+                web_evidence_context=web_evidence_context,
             )
         elif difficulty == "中等" or difficulty == "困难":
             final_decision, multiAgent = process_diff_query_with_callback(
@@ -375,9 +599,15 @@ def background_process(
                 session_id,
                 llm_client=request_client,
                 trace_recorder=trace_recorder,
+                web_evidence_context=web_evidence_context,
             )
         else:
             final_decision = "未知难度，无法处理"
+        if web_response is not None:
+            final_decision = canonicalize_grounded_answer(
+                final_decision,
+                web_response,
+            )
         save_conversation_turn(session_id, question, final_decision)
         if trace_recorder is not None:
             try:
@@ -418,6 +648,8 @@ async def chat_stream_endpoint(request: Request):
     enable_multi_agent = data.get("enableMultiAgent", False)
     difficulty = data.get("difficulty")
     enable_difficulty_agent = data.get("enableDifficultyAgent")
+    enable_web_search = _as_bool(data.get("enableWebSearch"), False)
+    web_search_query = _optional_text(data.get("webSearchQuery"))
     if enable_difficulty_agent is None:
         # 旧客户端未发送开关且未指定难度时，维持原来的自动判定行为。
         enable_difficulty_agent = not difficulty or difficulty == "auto"
@@ -428,6 +660,7 @@ async def chat_stream_endpoint(request: Request):
         return await chat_endpoint(request)
     
     # 清空并初始化消息队列
+    _start_job_state(session_id)
     if session_id in message_queues:
         while not message_queues[session_id].empty():
             try:
@@ -440,9 +673,18 @@ async def chat_stream_endpoint(request: Request):
     # 启动后台处理线程
     thread = threading.Thread(
         target=background_process,
-        args=(question, session_id, difficulty, bool(enable_difficulty_agent)),
+        kwargs={
+            "question": question,
+            "session_id": session_id,
+            "difficulty": difficulty,
+            "enable_difficulty_agent": _as_bool(enable_difficulty_agent),
+            "enable_web_search": enable_web_search,
+            "web_search_query": web_search_query,
+        },
     )
     thread.daemon = True
+    with job_state_lock:
+        worker_threads[session_id] = thread
     thread.start()
     
     # 流式生成器
@@ -465,6 +707,10 @@ async def chat_stream_endpoint(request: Request):
                         # WSL 转发层、代理或浏览器将空闲连接关闭。
                         if time.monotonic() - last_emit_at >= SSE_HEARTBEAT_SECONDS:
                             yield ": heartbeat\n\n"
+                            yield StreamHelper.format_sse({
+                                "type": "status",
+                                "status": get_job_status(session_id),
+                            })
                             last_emit_at = time.monotonic()
                         await asyncio.sleep(0.1)
                         continue
@@ -497,12 +743,20 @@ async def chat_stream_endpoint(request: Request):
         }
     )
 
+@app.get("/chat/status/{session_id}")
+async def chat_status_endpoint(session_id: str):
+    """查询后台线程、当前阶段和最近一次进展，辅助区分长耗时与卡死。"""
+    return get_job_status(session_id)
+
+
 # ✨ 保留：原有的非流式接口
 @app.post("/chat")
 async def chat_endpoint(request: Request):
     data = await request.json()
     question = data.get("query")
     session_id = data.get("id")
+    enable_web_search = _as_bool(data.get("enableWebSearch"), False)
+    web_search_query = _optional_text(data.get("webSearchQuery"))
     trace_recorder = create_trace_recorder(
         enabled=TRACE2SKILL_ENABLED,
         output_dir=TRACE2SKILL_TRACE_DIR,
@@ -530,25 +784,83 @@ async def chat_endpoint(request: Request):
         difficulty = "困难"
     else:
         difficulty = determine_difficulty(question)
+
+    web_response = None
+    web_search_error = None
+    web_search_elapsed_seconds = None
+    if enable_web_search:
+        web_started_at = time.monotonic()
+        try:
+            web_response = search_web_for_question(
+                question,
+                override_query=web_search_query,
+            )
+        except WebSearchError as error:
+            web_search_error = str(error)
+        except Exception as error:
+            web_search_error = "联网检索发生未预期错误"
+            print(f"联网检索异常: {error}")
+        finally:
+            web_search_elapsed_seconds = round(
+                time.monotonic() - web_started_at,
+                3,
+            )
+
     if trace_recorder is not None:
-        trace_recorder.set_context(difficulty=difficulty, endpoint="/chat")
+        trace_recorder.set_context(
+            difficulty=difficulty,
+            endpoint="/chat",
+            web_search_requested=enable_web_search,
+            web_search_applied=web_response is not None,
+            web_search_provider=web_response.provider if web_response else None,
+            web_search_source_urls=(
+                [result.url for result in web_response.results]
+                if web_response
+                else []
+            ),
+            web_search_error=web_search_error,
+            web_search_queries=list(web_response.queries) if web_response else [],
+            web_search_rejected_count=(
+                web_response.rejected_count if web_response else 0
+            ),
+            web_search_elapsed_seconds=web_search_elapsed_seconds,
+        )
     
     multiAgent = ""
     parsedSchedule = ""
+    web_evidence_context = (
+        build_web_evidence_context(web_response) if web_response else ""
+    )
     
-    if difficulty == "简单":
-        final_decision = process_base_query(question, client)
+    if web_response is not None and is_source_lookup_query(question):
+        final_decision = build_source_lookup_answer(question, web_response)
+    elif difficulty == "简单":
+        final_decision = process_base_query(
+            question,
+            client,
+            web_evidence_context=web_evidence_context,
+        )
         print(final_decision)
     elif difficulty == "中等":
-        final_decision, multiAgent = process_mid_query(question, client)
+        final_decision, multiAgent = process_mid_query(
+            question,
+            client,
+            web_evidence_context=web_evidence_context,
+        )
         print(final_decision)
     elif difficulty == "困难":
         final_decision, multiAgent = process_diff_query(
             question,
             client,
             trace_recorder=trace_recorder,
+            web_evidence_context=web_evidence_context,
         )
         print(multiAgent)
+    if web_response is not None:
+        final_decision = canonicalize_grounded_answer(
+            final_decision,
+            web_response,
+        )
     if trace_recorder is not None:
         try:
             trace_path = trace_recorder.finalize(
@@ -565,6 +877,20 @@ async def chat_endpoint(request: Request):
         "难度": difficulty,
         "多智能体结果": multiAgent,
         "多智能体调度结果": parsedSchedule,
+        "联网检索": {
+            "requested": enable_web_search,
+            "applied": web_response is not None,
+            "provider": web_response.provider if web_response else None,
+            "sources": (
+                [result.url for result in web_response.results]
+                if web_response
+                else []
+            ),
+            "error": web_search_error,
+            "queries": list(web_response.queries) if web_response else [],
+            "rejectedCount": web_response.rejected_count if web_response else 0,
+            "elapsedSeconds": web_search_elapsed_seconds,
+        },
         "id": session_id
     }
 

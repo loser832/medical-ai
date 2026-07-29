@@ -1,6 +1,7 @@
 import json
 from typing import Optional, Dict, List, Any
 import torch
+import torch.nn.functional as functional
 from config import (
     DEFAULT_FAISS_VERSION,
     EMBEDDING_MODEL,
@@ -16,19 +17,70 @@ from config import (
     VECTOR_RETRIEVER_TOP_K,
 )
 from utils import apply_thinking_instruction, strip_thinking_content
-from langchain.retrievers.document_compressors.base import BaseDocumentCompressor
 from pydantic import Field
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
-from langchain.schema import Document
+from transformers import AutoModel, AutoModelForSequenceClassification, AutoTokenizer
 from langchain_community.vectorstores import FAISS
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from langchain.chains.llm import LLMChain
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.retrievers import ContextualCompressionRetriever
+from langchain_core.embeddings import Embeddings
+try:
+    # LangChain < 1.0
+    from langchain.retrievers.document_compressors.base import BaseDocumentCompressor
+    from langchain.schema import Document
+    from langchain.chains.llm import LLMChain
+    from langchain.retrievers import ContextualCompressionRetriever
+except ImportError:
+    # LangChain 1.x moved the legacy chains/retrievers to langchain-classic.
+    from langchain_classic.retrievers.document_compressors.base import (
+        BaseDocumentCompressor,
+    )
+    from langchain_core.documents import Document
+    from langchain_classic.chains.llm import LLMChain
+    from langchain_classic.retrievers import ContextualCompressionRetriever
 import regex as re
 from transformers.generation.utils import GenerationConfig
 
 _JSON_BLOCK_RE = re.compile(r"(\{(?:[^{}]|(?1))*\}|\[(?:[^\[\]]|(?0))*\])", re.S)
+
+
+class LocalTransformerEmbeddings(Embeddings):
+    """Sentence-transformers-compatible CLS pooling using local HF weights."""
+
+    def __init__(self, model_name: str, batch_size: int = 8):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.batch_size = batch_size
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=HF_LOCAL_FILES_ONLY,
+        )
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            local_files_only=HF_LOCAL_FILES_ONLY,
+        ).to(self.device)
+        self.model.eval()
+
+    def _encode(self, texts: List[str]) -> List[List[float]]:
+        vectors: List[List[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            inputs = self.tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=8192,
+                return_tensors="pt",
+            ).to(self.device)
+            with torch.no_grad():
+                hidden_state = self.model(**inputs).last_hidden_state[:, 0]
+                embeddings = functional.normalize(hidden_state, p=2, dim=1)
+            vectors.extend(embeddings.cpu().tolist())
+        return vectors
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._encode(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._encode([text])[0]
 
 def _extract_first_json_block(text: str) -> str:
     """
@@ -61,9 +113,10 @@ class BgeReranker(BaseDocumentCompressor):
         extra = "allow"
 
     def __init__(self, **data):
-        super().__init__(**data) 
-        if torch.cuda.is_available():
-            self.device = "cuda"
+        super().__init__(**data)
+        # The original default was always CUDA, which crashes on CPU-only
+        # PyTorch builds before the medical agent can start.
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # 初始化模型和分词器
         try:
@@ -357,7 +410,13 @@ class Retriever:
         self.min_score =min_score
         faiss_index_path = FAISS_INDEX_VERSIONS[base_version]
         self.guideline_bge_reranker = BgeReranker(model_name=RERANK_MODEL, top_n=RERANK_TOP_N, min_score=self.min_score)
-        self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+        try:
+            self.embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+        except ImportError:
+            # The checked-in bge-m3 bundle uses CLS pooling + L2 normalization.
+            # This keeps the medical agent runnable without downloading the
+            # optional sentence-transformers package.
+            self.embeddings = LocalTransformerEmbeddings(EMBEDDING_MODEL)
         self.main_vector_db = FAISS.load_local(faiss_index_path, self.embeddings,allow_dangerous_deserialization=True )
 
     def retrieve_docs_for_question(self, question, topk):
